@@ -139,35 +139,82 @@ def format_push_brief(report: Dict[str, Any], session: str = "daily") -> str:
     return "\n".join(lines)
 
 
-def build_line_flex_message(report: Dict[str, Any], session: str = "daily") -> Dict[str, Any]:
-    """建構符合 LINE Messaging API 規格的精美盤前投資決策 Flex Message 卡片（含產業利多與利空消息面事由）。"""
+def _make_dashboard_footer(page_hint: str, dashboard_url: str = "") -> Dict[str, Any]:
+    contents: List[Dict[str, Any]] = []
+    if dashboard_url and dashboard_url.startswith("https://"):
+        contents.append(
+            {
+                "type": "button",
+                "style": "primary",
+                "color": "#1B4F8A",
+                "height": "sm",
+                "action": {
+                    "type": "uri",
+                    "label": "打開完整互動儀表板",
+                    "uri": dashboard_url[:950],
+                },
+            }
+        )
+    contents.append(
+        {
+            "type": "text",
+            "text": page_hint,
+            "size": "xxs",
+            "color": "#888888",
+            "align": "center",
+            "margin": "sm" if contents else "none",
+        }
+    )
+    return {
+        "type": "box",
+        "layout": "vertical",
+        "paddingAll": "10px",
+        "backgroundColor": "#F8F7F3",
+        "contents": contents,
+    }
+
+
+def build_line_flex_message(
+    report: Dict[str, Any],
+    session: str = "daily",
+    dashboard_url: str | None = None,
+) -> Dict[str, Any]:
+    """建構 LINE Messaging API 3 張可左右滑動 Flex Carousel 卡片（大盤產業 / 自選股與回測 / AI信用雷達），並支援底部直開完整互動儀表板按鈕。"""
     macro = report["macro"]
     sectors = report.get("sectors") or []
     bull_secs = report.get("bullish_sectors") or sectors[:3]
     bear_secs = report.get("bearish_sectors") or list(reversed(sectors))[:3]
     news = report.get("news") or []
-    focus_stocks = _select_focus_stocks(report, session)[:4]
+    focus_stocks = _select_focus_stocks(report, session)
+    wl_syms = {str(w.get("symbol", "")).upper() for w in (report.get("watchlist") or [])}
     title = SESSION_LABELS.get(session, SESSION_LABELS["daily"])
+    dash_url = (dashboard_url if dashboard_url is not None else os.getenv("DASHBOARD_URL", "")).strip()
 
     score = float(macro.get("overall_score", 0.0))
     if score >= 10:
-        header_bg, accent_hex = "#0D7A52", "#0D7A52"
+        header_bg = "#0D7A52"
     elif score <= -10:
-        header_bg, accent_hex = "#B83232", "#C23636"
+        header_bg = "#B83232"
     else:
-        header_bg, accent_hex = "#9A6412", "#B87414"
+        header_bg = "#9A6412"
 
     def _val_color(v: float, invert: bool = False) -> str:
         eff = -v if invert else v
         return "#0D7A52" if eff > 0.05 else ("#C23636" if eff < -0.05 else "#666666")
 
-    body_contents: List[Dict[str, Any]] = []
+    def _safe_txt(val: Any, fallback: str = "—") -> str:
+        s = str(val or "").strip()
+        return s if s else fallback
 
-    # 1. 全球區域情緒與大盤摘要
+    # =========================================================================
+    # 卡片 1/3：大盤多空推演 × 三大法人 × 利多／利空產業排行（含消息面事由）
+    # =========================================================================
+    c1_body: List[Dict[str, Any]] = []
+
     reg_sum = macro.get("region_summary") or []
     if reg_sum:
         reg_text = " ｜ ".join(f"{r['region']} {r['avg_score']:+.0f}" for r in reg_sum[:6])
-        body_contents.append(
+        c1_body.append(
             {
                 "type": "box",
                 "layout": "vertical",
@@ -176,12 +223,11 @@ def build_line_flex_message(report: Dict[str, Any], session: str = "daily") -> D
                 "paddingAll": "10px",
                 "contents": [
                     {"type": "text", "text": "全球區域新聞情緒", "size": "xs", "weight": "bold", "color": "#555555"},
-                    {"type": "text", "text": reg_text, "size": "xs", "color": "#222222", "wrap": True, "margin": "xs"},
+                    {"type": "text", "text": _safe_txt(reg_text), "size": "xs", "color": "#222222", "wrap": True, "margin": "xs"},
                 ],
             }
         )
 
-    # 2. 核心指數快照
     bm_map = {b["symbol"]: b for b in (macro.get("benchmarks") or [])}
     bm_rows: List[Dict[str, Any]] = []
     for sym, label in (("^GSPC", "標普500"), ("^SOX", "費城半導體"), ("^TWII", "台股加權"), ("^VIX", "恐慌VIX")):
@@ -207,7 +253,7 @@ def build_line_flex_message(report: Dict[str, Any], session: str = "daily") -> D
                 }
             )
     if bm_rows:
-        body_contents.extend(
+        c1_body.extend(
             [
                 {"type": "separator", "margin": "md"},
                 {"type": "text", "text": "跨市場核心指數", "size": "xs", "weight": "bold", "color": "#1B4F8A", "margin": "md"},
@@ -215,10 +261,9 @@ def build_line_flex_message(report: Dict[str, Any], session: str = "daily") -> D
             ]
         )
 
-    # 3. 台股大盤三大法人買賣超
     tw_inst = macro.get("tw_institutional")
     if tw_inst and tw_inst.get("date"):
-        body_contents.extend(
+        c1_body.extend(
             [
                 {"type": "separator", "margin": "md"},
                 {
@@ -249,60 +294,17 @@ def build_line_flex_message(report: Dict[str, Any], session: str = "daily") -> D
             ]
         )
 
-    # 3.5 AI 信用風險雷達摘要
-    cr = report.get("credit_radar")
-    if cr:
-        cr_score = float(cr.get("systemic_score", 0.0))
-        cr_color = "#C23636" if cr_score >= 48 else ("#B87414" if cr_score >= 30 else "#0D7A52")
-        top_w = (cr.get("watchlist") or [None])[0]
-        top_w_txt = (
-            f"最高信用風險警戒：{top_w['name']}({top_w['symbol']}・{top_w['credit_rating']}・{top_w['risk_score']:.0f}分)"
-            if top_w
-            else ""
-        )
-        body_contents.extend(
-            [
-                {"type": "separator", "margin": "md"},
-                {
-                    "type": "box",
-                    "layout": "baseline",
-                    "margin": "md",
-                    "contents": [
-                        {"type": "text", "text": "AI 信用風險雷達", "size": "xs", "weight": "bold", "color": "#1B4F8A", "flex": 5},
-                        {
-                            "type": "text",
-                            "text": f"{cr_score:.0f}/100・{cr.get('risk_level', '')}",
-                            "size": "xs",
-                            "weight": "bold",
-                            "color": cr_color,
-                            "align": "end",
-                            "flex": 5,
-                        },
-                    ],
-                },
-                {
-                    "type": "text",
-                    "text": f"利差狀態：{cr.get('spread_regime', '')}" + (f" ｜ {top_w_txt}" if top_w_txt else ""),
-                    "size": "xxs",
-                    "color": "#444444",
-                    "wrap": True,
-                    "margin": "xs",
-                },
-            ]
-        )
-
-    # 4A. 產業利多／抗跌推薦 Top 3（附消息面事由，點擊可開來源驗證）
     if bull_secs:
-        body_contents.append({"type": "separator", "margin": "md"})
-        body_contents.append({"type": "text", "text": "▲ 產業利多／抗跌推薦（點項目看來源）", "size": "xs", "weight": "bold", "color": "#0D7A52", "margin": "md"})
+        c1_body.append({"type": "separator", "margin": "md"})
+        c1_body.append({"type": "text", "text": "▲ 產業利多／抗跌推薦（點擊驗證來源）", "size": "xs", "weight": "bold", "color": "#0D7A52", "margin": "md"})
         for idx, s in enumerate(bull_secs[:3], 1):
             bull_n = s.get("bullish_catalysts_news") or []
             ev_link = ""
             if bull_n:
-                ev_txt = f"【{bull_n[0]['event_type']}】{str(bull_n[0]['title'])[:46]}"
+                ev_txt = f"【{bull_n[0]['event_type']}】{str(bull_n[0]['title'])[:44]}"
                 ev_link = str(bull_n[0].get("link") or "")
             else:
-                ev_txt = str(s.get("news_summary_reason") or (s.get("key_drivers") or [""])[0])[:54]
+                ev_txt = str(s.get("news_summary_reason") or (s.get("key_drivers") or ["基本面支撐"])[0])[:52]
             box: Dict[str, Any] = {
                 "type": "box",
                 "layout": "vertical",
@@ -316,25 +318,24 @@ def build_line_flex_message(report: Dict[str, Any], session: str = "daily") -> D
                             {"type": "text", "text": f"{s['score']:.1f}分 ({s['outlook_label']})", "size": "xs", "weight": "bold", "color": "#0D7A52", "align": "end", "flex": 4},
                         ],
                     },
-                    {"type": "text", "text": ev_txt + (" ↗" if ev_link.startswith("https://") else ""), "size": "xxs", "color": "#555555", "wrap": True},
+                    {"type": "text", "text": _safe_txt(ev_txt) + (" ↗" if ev_link.startswith("https://") else ""), "size": "xxs", "color": "#555555", "wrap": True},
                 ],
             }
             if ev_link.startswith("https://") and len(ev_link) <= 950:
                 box["action"] = {"type": "uri", "label": "查看來源", "uri": ev_link}
-            body_contents.append(box)
+            c1_body.append(box)
 
-    # 4B. 產業利空／警戒避開 Top 3（附消息面事由，點擊可開來源驗證）
     if bear_secs:
-        body_contents.append({"type": "separator", "margin": "md"})
-        body_contents.append({"type": "text", "text": "▼ 產業利空／警戒避開（點項目看來源）", "size": "xs", "weight": "bold", "color": "#C23636", "margin": "md"})
+        c1_body.append({"type": "separator", "margin": "md"})
+        c1_body.append({"type": "text", "text": "▼ 產業利空／警戒避開（點擊驗證來源）", "size": "xs", "weight": "bold", "color": "#C23636", "margin": "md"})
         for idx, s in enumerate(bear_secs[:3], 1):
             bear_n = s.get("bearish_catalysts_news") or []
             ev_link = ""
             if bear_n:
-                ev_txt = f"【{bear_n[0]['event_type']}】{str(bear_n[0]['title'])[:46]}"
+                ev_txt = f"【{bear_n[0]['event_type']}】{str(bear_n[0]['title'])[:44]}"
                 ev_link = str(bear_n[0].get("link") or "")
             else:
-                ev_txt = str(s.get("news_summary_reason") or (s.get("key_risks") or [""])[0])[:54]
+                ev_txt = str(s.get("news_summary_reason") or (s.get("key_risks") or ["承壓偏弱"])[0])[:52]
             box = {
                 "type": "box",
                 "layout": "vertical",
@@ -348,139 +349,287 @@ def build_line_flex_message(report: Dict[str, Any], session: str = "daily") -> D
                             {"type": "text", "text": f"{s['score']:.1f}分 ({s['outlook_label']})", "size": "xs", "weight": "bold", "color": "#C23636", "align": "end", "flex": 4},
                         ],
                     },
-                    {"type": "text", "text": ev_txt + (" ↗" if ev_link.startswith("https://") else ""), "size": "xxs", "color": "#663333", "wrap": True},
+                    {"type": "text", "text": _safe_txt(ev_txt) + (" ↗" if ev_link.startswith("https://") else ""), "size": "xxs", "color": "#663333", "wrap": True},
                 ],
             }
             if ev_link.startswith("https://") and len(ev_link) <= 950:
                 box["action"] = {"type": "uri", "label": "查看來源", "uri": ev_link}
-            body_contents.append(box)
+            c1_body.append(box)
 
-    # 5. 盤前重點關注標的（含基本面 / 三大法人 / 2年期策略回測）
+    if not c1_body:
+        c1_body.append({"type": "text", "text": "暫無大盤詳細資料", "size": "xs", "color": "#666666"})
+
+    bubble_macro = {
+        "type": "bubble",
+        "size": "mega",
+        "header": {
+            "type": "box",
+            "layout": "vertical",
+            "backgroundColor": header_bg,
+            "paddingAll": "14px",
+            "contents": [
+                {"type": "text", "text": f"{title} (1/3)", "color": "#FFFFFFCC", "size": "xs", "weight": "bold"},
+                {
+                    "type": "box",
+                    "layout": "baseline",
+                    "margin": "xs",
+                    "contents": [
+                        {"type": "text", "text": f"{macro['stance']}  {score:+.1f}", "color": "#FFFFFF", "size": "xl", "weight": "bold", "flex": 7},
+                        {"type": "text", "text": f"信心 {macro['confidence']}%", "color": "#FFFFFFEE", "size": "xs", "align": "end", "flex": 3},
+                    ],
+                },
+                {
+                    "type": "text",
+                    "text": f"全球 {report['news_count']} 則多語情資 ｜ UTC {report['generated_at'][:16].replace('T', ' ')}",
+                    "color": "#FFFFFFBB",
+                    "size": "xxs",
+                    "margin": "xs",
+                },
+            ],
+        },
+        "body": {"type": "box", "layout": "vertical", "paddingAll": "14px", "contents": c1_body},
+        "footer": _make_dashboard_footer("1/3 ・ 往左滑看「自選股與個股回測」→", dash_url),
+    }
+
+    # =========================================================================
+    # 卡片 2/3：★自選股 × 盤前重點個股（基本／技術／法人／2年回測／直擊新聞）
+    # =========================================================================
+    c2_body: List[Dict[str, Any]] = []
     if focus_stocks:
-        body_contents.append({"type": "separator", "margin": "md"})
-        body_contents.append({"type": "text", "text": "盤前重點標的（基本／法人／回測）", "size": "xs", "weight": "bold", "color": "#1B4F8A", "margin": "md"})
-        for st in focus_stocks:
+        c2_body.append({"type": "text", "text": "★ 自選股優先 × 盤前重點關注標的", "size": "xs", "weight": "bold", "color": "#1B4F8A"})
+        for st in focus_stocks[:5]:
             f = st["fundamental"]
             t = st["technical"]
             inst = st.get("institutional")
             bt = st.get("backtest")
+            is_wl = str(st.get("symbol", "")).upper() in wl_syms
+            prefix = "★ " if is_wl else ""
             sub_parts = [f"基本{f['grade']}", f"技術{t['trend_label']}"]
             if inst and inst.get("total_net_lots") is not None:
                 sub_parts.append(f"法人{inst['total_net_lots']:+,d}張")
             if bt:
                 sub_parts.append(f"回測{bt['best_total_return_pct']:+.0f}%({bt['best_current_signal']})")
-            body_contents.append(
+            st_contents: List[Dict[str, Any]] = [
+                {
+                    "type": "box",
+                    "layout": "baseline",
+                    "contents": [
+                        {"type": "text", "text": f"{prefix}{st['name']} ({st['symbol']})", "size": "xs", "weight": "bold", "color": "#111111", "flex": 6},
+                        {
+                            "type": "text",
+                            "text": f"{t['price']:.1f} ({t['change_pct_1d']:+.1f}%)",
+                            "size": "xs",
+                            "weight": "bold",
+                            "color": _val_color(t["change_pct_1d"]),
+                            "align": "end",
+                            "flex": 4,
+                        },
+                    ],
+                },
+                {"type": "text", "text": " ・ ".join(sub_parts), "size": "xxs", "color": "#555555", "wrap": True},
+            ]
+            # 嚴格只顯示真正直接相關的個股即時新聞（無新聞絕不硬塞）
+            rel_news = st.get("related_news") or []
+            if rel_news:
+                n0 = rel_news[0]
+                n0_link = str(n0.get("link") or "")
+                n0_box: Dict[str, Any] = {
+                    "type": "text",
+                    "text": f"📰 [{n0.get('sentiment_label', '中性')}] {str(n0.get('title', ''))[:48]}" + (" ↗" if n0_link.startswith("https://") else ""),
+                    "size": "xxs",
+                    "color": "#1B4F8A" if n0_link.startswith("https://") else "#444444",
+                    "wrap": True,
+                    "margin": "xs",
+                }
+                if n0_link.startswith("https://") and len(n0_link) <= 950:
+                    n0_box["action"] = {"type": "uri", "label": "閱讀個股新聞", "uri": n0_link}
+                st_contents.append(n0_box)
+            c2_body.append(
                 {
                     "type": "box",
                     "layout": "vertical",
                     "margin": "sm",
-                    "contents": [
-                        {
-                            "type": "box",
-                            "layout": "baseline",
-                            "contents": [
-                                {"type": "text", "text": f"{st['name']} ({st['symbol']})", "size": "xs", "weight": "bold", "color": "#111111", "flex": 6},
-                                {
-                                    "type": "text",
-                                    "text": f"{t['price']:.1f} ({t['change_pct_1d']:+.1f}%)",
-                                    "size": "xs",
-                                    "weight": "bold",
-                                    "color": _val_color(t["change_pct_1d"]),
-                                    "align": "end",
-                                    "flex": 4,
-                                },
-                            ],
-                        },
-                        {"type": "text", "text": " ・ ".join(sub_parts), "size": "xxs", "color": "#555555", "wrap": True},
-                    ],
+                    "paddingAll": "8px",
+                    "backgroundColor": "#FFFBEF" if is_wl else "#F8F9FA",
+                    "cornerRadius": "8px",
+                    "contents": st_contents,
                 }
             )
 
-    # 6. 全球高訊號焦點頭條 Top 3
     if news:
-        body_contents.append({"type": "separator", "margin": "md"})
-        body_contents.append({"type": "text", "text": "全球高訊號焦點新聞", "size": "xs", "weight": "bold", "color": "#1B4F8A", "margin": "md"})
+        c2_body.append({"type": "separator", "margin": "md"})
+        c2_body.append({"type": "text", "text": "全球高訊號焦點頭條（點擊看原文）", "size": "xs", "weight": "bold", "color": "#1B4F8A", "margin": "md"})
         for n in news[:3]:
             reg = n.get("macro_region", n.get("region", "全球"))
-            body_contents.append(
-                {
-                    "type": "text",
-                    "text": f"• [{reg}|{n['sentiment_label']}] {n['title'][:64]}",
-                    "size": "xxs",
-                    "color": "#333333",
-                    "wrap": True,
-                    "margin": "xs",
-                }
-            )
-
-    # 7. 操作紀律提醒
-    if macro.get("action_plan"):
-        body_contents.append({"type": "separator", "margin": "md"})
-        body_contents.append(
-            {
+            lnk = str(n.get("link") or "")
+            ntxt: Dict[str, Any] = {
                 "type": "text",
-                "text": f"操作紀律：{macro['action_plan'][0]}",
+                "text": f"• [{reg}|{n['sentiment_label']}] {str(n['title'])[:58]}" + (" ↗" if lnk.startswith("https://") else ""),
                 "size": "xxs",
-                "color": "#444444",
+                "color": "#333333",
                 "wrap": True,
-                "margin": "sm",
+                "margin": "xs",
+            }
+            if lnk.startswith("https://") and len(lnk) <= 950:
+                ntxt["action"] = {"type": "uri", "label": "開啟原文", "uri": lnk}
+            c2_body.append(ntxt)
+
+    if not c2_body:
+        c2_body.append({"type": "text", "text": "尚無個股追蹤資料", "size": "xs", "color": "#666666"})
+
+    bubble_stocks = {
+        "type": "bubble",
+        "size": "mega",
+        "header": {
+            "type": "box",
+            "layout": "vertical",
+            "backgroundColor": "#1B4F8A",
+            "paddingAll": "14px",
+            "contents": [
+                {"type": "text", "text": "自選股 × 重點個股 × 焦點新聞 (2/3)", "color": "#FFFFFFCC", "size": "xs", "weight": "bold"},
+                {"type": "text", "text": f"追蹤 {len(wl_syms)} 檔自選股 ｜ 共 {len(focus_stocks)} 檔精選", "color": "#FFFFFF", "size": "lg", "weight": "bold", "margin": "xs"},
+                {"type": "text", "text": "基本面評級 ・ 技術面趨勢 ・ 2年策略回測 ・ 嚴格過濾直擊新聞", "color": "#FFFFFFBB", "size": "xxs", "margin": "xs"},
+            ],
+        },
+        "body": {"type": "box", "layout": "vertical", "paddingAll": "14px", "contents": c2_body},
+        "footer": _make_dashboard_footer("2/3 ・ 往左滑看「AI 信用風險雷達」→", dash_url),
+    }
+
+    # =========================================================================
+    # 卡片 3/3：AI 信用風險雷達 × 高危企業警戒 × 盤前操作紀律
+    # =========================================================================
+    cr = report.get("credit_radar") or {}
+    cr_score = float(cr.get("systemic_score", 0.0))
+    cr_bg = "#B83232" if cr_score >= 48 else ("#9A6412" if cr_score >= 30 else "#0D7A52")
+    c3_body: List[Dict[str, Any]] = []
+
+    if cr:
+        c3_body.append(
+            {
+                "type": "box",
+                "layout": "vertical",
+                "backgroundColor": "#F5F4EF",
+                "cornerRadius": "8px",
+                "paddingAll": "10px",
+                "contents": [
+                    {"type": "text", "text": f"利差狀態：{_safe_txt(cr.get('spread_regime'))}", "size": "xs", "weight": "bold", "color": "#222222"},
+                    {"type": "text", "text": _safe_txt(cr.get("ai_summary"), "信用市場監測中")[:150], "size": "xxs", "color": "#444444", "wrap": True, "margin": "xs"},
+                ],
             }
         )
 
-    alt_text = f"{title}｜{macro['stance']}({score:+.1f})｜{sectors[0]['name'] if sectors else '股市情報'}"[:390]
-
-    return {
-        "type": "flex",
-        "altText": alt_text,
-        "contents": {
-            "type": "bubble",
-            "size": "giga",
-            "header": {
-                "type": "box",
-                "layout": "vertical",
-                "backgroundColor": header_bg,
-                "paddingAll": "14px",
-                "contents": [
-                    {"type": "text", "text": title, "color": "#FFFFFFCC", "size": "xs", "weight": "bold"},
+        proxies = cr.get("credit_proxies") or []
+        if proxies:
+            c3_body.append({"type": "separator", "margin": "md"})
+            c3_body.append({"type": "text", "text": "全球信用債／銀行指標", "size": "xs", "weight": "bold", "color": "#1B4F8A", "margin": "md"})
+            for p in proxies[:4]:
+                c3_body.append(
                     {
                         "type": "box",
                         "layout": "baseline",
                         "margin": "xs",
                         "contents": [
-                            {"type": "text", "text": f"{macro['stance']}  {score:+.1f}", "color": "#FFFFFF", "size": "xl", "weight": "bold", "flex": 7},
-                            {"type": "text", "text": f"信心 {macro['confidence']}%", "color": "#FFFFFFEE", "size": "xs", "align": "end", "flex": 3},
+                            {"type": "text", "text": f"{p['symbol']} ({p.get('category', '')})", "size": "xs", "color": "#444444", "flex": 5},
+                            {"type": "text", "text": f"{float(p.get('price', 0)):.1f}", "size": "xs", "weight": "bold", "align": "end", "flex": 2},
+                            {
+                                "type": "text",
+                                "text": f"1D {float(p.get('change_pct_1d', 0)):+.1f}% / 5D {float(p.get('change_pct_5d', 0)):+.1f}%",
+                                "size": "xxs",
+                                "color": _val_color(float(p.get("change_pct_5d", 0))),
+                                "align": "end",
+                                "flex": 5,
+                            },
                         ],
-                    },
-                    {
-                        "type": "text",
-                        "text": f"全球 {report['news_count']} 則多語情資 ｜ UTC {report['generated_at'][:16].replace('T', ' ')}",
-                        "color": "#FFFFFFBB",
-                        "size": "xxs",
-                        "margin": "xs",
-                    },
-                ],
-            },
-            "body": {
-                "type": "box",
-                "layout": "vertical",
-                "paddingAll": "14px",
-                "contents": body_contents,
-            },
-            "footer": {
-                "type": "box",
-                "layout": "vertical",
-                "paddingAll": "10px",
-                "backgroundColor": "#F8F7F3",
-                "contents": [
-                    {
-                        "type": "text",
-                        "text": "Stock Intel 量化研究簡報・僅供參考，不構成投資建議",
-                        "size": "xxs",
-                        "color": "#888888",
-                        "align": "center",
                     }
-                ],
-            },
+                )
+
+        wlist = cr.get("watchlist") or []
+        if wlist:
+            c3_body.append({"type": "separator", "margin": "md"})
+            c3_body.append({"type": "text", "text": "高信用風險警戒個股 Top 4", "size": "xs", "weight": "bold", "color": "#C23636", "margin": "md"})
+            for w in wlist[:4]:
+                r_sc = float(w.get("risk_score", 0.0))
+                r_col = "#C23636" if r_sc >= 48 else ("#B87414" if r_sc >= 30 else "#0D7A52")
+                c3_body.append(
+                    {
+                        "type": "box",
+                        "layout": "vertical",
+                        "margin": "xs",
+                        "contents": [
+                            {
+                                "type": "box",
+                                "layout": "baseline",
+                                "contents": [
+                                    {"type": "text", "text": f"{w['name']} ({w['symbol']})", "size": "xs", "weight": "bold", "color": "#111111", "flex": 6},
+                                    {"type": "text", "text": f"信評 {w['credit_rating']}・{r_sc:.0f}分", "size": "xs", "weight": "bold", "color": r_col, "align": "end", "flex": 4},
+                                ],
+                            },
+                            {"type": "text", "text": _safe_txt(w.get("top_flag"), w.get("risk_level", ""))[:60], "size": "xxs", "color": "#666666", "wrap": True},
+                        ],
+                    }
+                )
+
+        cnews = cr.get("credit_news") or []
+        if cnews:
+            c3_body.append({"type": "separator", "margin": "md"})
+            c3_body.append({"type": "text", "text": "企業信用／債市違約快訊", "size": "xs", "weight": "bold", "color": "#1B4F8A", "margin": "md"})
+            for cn in cnews[:2]:
+                clnk = str(cn.get("link") or "")
+                cn_txt: Dict[str, Any] = {
+                    "type": "text",
+                    "text": f"• {str(cn.get('title', ''))[:58]}" + (" ↗" if clnk.startswith("https://") else ""),
+                    "size": "xxs",
+                    "color": "#444444",
+                    "wrap": True,
+                    "margin": "xs",
+                }
+                if clnk.startswith("https://") and len(clnk) <= 950:
+                    cn_txt["action"] = {"type": "uri", "label": "閱讀信用快訊", "uri": clnk}
+                c3_body.append(cn_txt)
+
+    if macro.get("action_plan"):
+        c3_body.append({"type": "separator", "margin": "md"})
+        c3_body.append({"type": "text", "text": "盤前操作紀律提醒", "size": "xs", "weight": "bold", "color": "#1B4F8A", "margin": "md"})
+        for act in macro["action_plan"][:2]:
+            c3_body.append({"type": "text", "text": f"• {_safe_txt(act)[:78]}", "size": "xxs", "color": "#333333", "wrap": True, "margin": "xs"})
+
+    if not c3_body:
+        c3_body.append({"type": "text", "text": "本次尚無信用雷達異常警示。", "size": "xs", "color": "#666666"})
+
+    bubble_credit = {
+        "type": "bubble",
+        "size": "mega",
+        "header": {
+            "type": "box",
+            "layout": "vertical",
+            "backgroundColor": cr_bg,
+            "paddingAll": "14px",
+            "contents": [
+                {"type": "text", "text": "AI 信用風險雷達 (3/3)", "color": "#FFFFFFCC", "size": "xs", "weight": "bold"},
+                {
+                    "type": "box",
+                    "layout": "baseline",
+                    "margin": "xs",
+                    "contents": [
+                        {"type": "text", "text": f"{_safe_txt(cr.get('risk_level'), '系統監測中')}", "color": "#FFFFFF", "size": "lg", "weight": "bold", "flex": 7},
+                        {"type": "text", "text": f"{cr_score:.1f}/100", "color": "#FFFFFFEE", "size": "md", "weight": "bold", "align": "end", "flex": 3},
+                    ],
+                },
+                {"type": "text", "text": "高收益債利差 ・ 區域銀行壓力 ・ 個股模擬信評 AAA–CCC", "color": "#FFFFFFBB", "size": "xxs", "margin": "xs"},
+            ],
+        },
+        "body": {"type": "box", "layout": "vertical", "paddingAll": "14px", "contents": c3_body},
+        "footer": _make_dashboard_footer("3/3 ・ Stock Intel 量化研究簡報・僅供參考", dash_url),
+    }
+
+    alt_text = f"{title}｜{macro['stance']}({score:+.1f})｜信用雷達{cr_score:.0f}分｜往左滑看3張完整卡片"[:390]
+
+    return {
+        "type": "flex",
+        "altText": alt_text,
+        "contents": {
+            "type": "carousel",
+            "contents": [bubble_macro, bubble_stocks, bubble_credit],
         },
     }
 
