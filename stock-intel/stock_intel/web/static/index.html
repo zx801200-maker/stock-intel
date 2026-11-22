@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>智策股市情報與多空推演系統 v2.0 | Stock Intel</title>
+  <meta name="description" content="全球多語系國際新聞蒐集、台股三大法人買賣超、美台產業利多排行、基本面與技術面優劣勢分析與2年期策略回測儀表板。" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-group">
+      <h1 class="brand-title">智策股市情報系統 Stock Intel</h1>
+      <span class="brand-sub">全球多語情資 × 台股三大法人 × 基本面技術面 × 策略回測</span>
+    </div>
+
+    <div class="topbar-controls">
+      <span id="metaStamp" class="meta-stamp mono">載入中...</span>
+      <form id="lookupForm" class="lookup-form">
+        <input
+          id="lookupInput"
+          class="input-field mono"
+          type="text"
+          placeholder="即時查詢代號 (如 NVDA / 2330)"
+          aria-label="查詢股票代號"
+        />
+        <button id="lookupBtn" type="submit" class="btn btn-primary">即時診斷</button>
+      </form>
+      <button id="refreshBtn" type="button" class="btn">重新掃描全球情資</button>
+      <button id="themeBtn" type="button" class="btn" title="切換淺色/深色模式">深色模式</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <nav class="section-nav" aria-label="功能分頁">
+      <button class="nav-tab active" data-tab="macro">1. 全球多空推演與三大法人</button>
+      <button class="nav-tab" data-tab="sectors">2. 產業利多 × 利空排行（消息面）</button>
+      <button class="nav-tab" data-tab="watchlist">3. ★ 自選股追蹤 (<span id="wlTabCount">0</span>)</button>
+      <button class="nav-tab" data-tab="stocks">4. 個股診斷 × 籌碼 × 策略回測</button>
+      <button class="nav-tab" data-tab="credit">5. AI 信用風險雷達</button>
+      <button class="nav-tab" data-tab="news">6. 全球多語系財經情資庫</button>
+    </nav>
+
+    <div id="loadingBox" class="panel loading-state">
+      正在併發蒐集全球 7 大區域多語系財經新聞、跨市場指數、台股三大法人籌碼與 2 年期個股策略回測，請稍候...
+    </div>
+
+    <div id="appContent" style="display:none;">
+      <!-- 分頁 1：全球多空推演與三大法人 -->
+      <section id="tab-macro" class="tab-panel active">
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h2 class="panel-title">全球股市多空推演總覽</h2>
+              <span class="panel-sub">整合北美、歐洲、日本、韓國、東南亞／印度、中東與台灣多語情資、跨市場指數與三大法人籌碼</span>
+            </div>
+            <div style="display:flex; gap:8px; align-items:center;">
+              <span id="engineBadge" class="tag tag-brand">內建多語量化引擎</span>
+              <span id="modeBadge" class="tag tag-muted">LIVE</span>
+            </div>
+          </div>
+
+          <div class="macro-hero">
+            <div class="stance-box">
+              <div>
+                <div class="stance-kicker">Global Market Stance 推演結論</div>
+                <div class="stance-main">
+                  <span id="stanceLabel" class="stance-label">—</span>
+                  <span id="stanceScore" class="stance-score mono">0.0</span>
+                </div>
+                <div class="panel-sub">模型信心度：<strong id="confidenceVal" class="mono">—</strong></div>
+
+                <div class="gauge-track" aria-label="多空推演刻度條">
+                  <div id="gaugeMarker" class="gauge-marker" style="left:50%;"></div>
+                </div>
+                <div class="gauge-scale mono">
+                  <span>-100 強烈利空</span>
+                  <span>0 中性</span>
+                  <span>+100 強烈利多</span>
+                </div>
+              </div>
+
+              <div class="sub-scores">
+                <div class="sub-score-item">
+                  <span class="sub-score-label">全球新聞</span>
+                  <span id="subNews" class="sub-score-val mono">—</span>
+                </div>
+                <div class="sub-score-item">
+                  <span class="sub-score-label">市場動能</span>
+                  <span id="subMom" class="sub-score-val mono">—</span>
+                </div>
+                <div class="sub-score-item">
+                  <span class="sub-score-label">風險環境</span>
+                  <span id="subRisk" class="sub-score-val mono">—</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="macro-narrative">
+              <p id="executiveSummary" class="summary-lead"></p>
+              <div id="llmCommentaryBox" class="llm-box" style="display:none;"></div>
+              <div>
+                <div class="stance-kicker" style="margin-bottom:6px;">盤前策略行動建議</div>
+                <ul id="actionPlanList" class="action-list"></ul>
+              </div>
+            </div>
+          </div>
+
+          <div id="benchmarkGrid" class="benchmark-grid"></div>
+        </div>
+
+        <!-- 台股三大法人大盤買賣超 -->
+        <div id="twInstPanel" class="panel" style="display:none; margin-top:16px;">
+          <div class="panel-header" style="margin-bottom:6px;">
+            <div>
+              <h3 class="panel-title">台股大盤三大法人買賣超統計（TWSE 官方資料）</h3>
+              <span id="twInstSub" class="panel-sub">—</span>
+            </div>
+            <span id="twInstSignal" class="tag tag-neutral">—</span>
+          </div>
+          <div id="twInstStrip" class="inst-strip"></div>
+        </div>
+
+        <!-- AI 信用風險雷達快覽橫幅 -->
+        <div id="macroCreditBanner" class="panel credit-banner" style="display:none;">
+          <div style="min-width:0; flex:1;">
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <h3 class="panel-title">AI 信用風險雷達（債市利差 × 企業違約壓力）</h3>
+              <span id="macroCreditBadge" class="tag tag-neutral">—</span>
+              <span id="macroCreditSpread" class="tag tag-muted">—</span>
+            </div>
+            <p id="macroCreditSummary" class="panel-sub" style="margin:6px 0 0; line-height:1.55;">—</p>
+          </div>
+          <button id="gotoCreditBtn" type="button" class="btn btn-primary" style="flex-shrink:0;">開啟五維信用雷達 →</button>
+        </div>
+
+        <!-- 全球 7 大板塊新聞情緒 -->
+        <div class="panel" style="margin-top:16px;">
+          <div class="panel-header">
+            <h3 class="panel-title">全球各區域財經新聞情緒溫度計</h3>
+            <span class="panel-sub">涵蓋英、中、日、韓、德、法 6 種語系媒體即時掃描</span>
+          </div>
+          <div id="regionGrid" class="region-grid"></div>
+        </div>
+
+        <div class="two-col">
+          <div class="panel">
+            <div class="panel-header">
+              <h3 class="panel-title text-bull">主要利多催化劑</h3>
+              <span class="panel-sub">正向動能與全球利多頭條</span>
+            </div>
+            <ul id="bullCatalysts" class="bullet-list bullet-bull"></ul>
+          </div>
+          <div class="panel">
+            <div class="panel-header">
+              <h3 class="panel-title text-bear">主要利空與下行風險</h3>
+              <span class="panel-sub">風險警報與承壓因子</span>
+            </div>
+            <ul id="bearRisks" class="bullet-list bullet-bear"></ul>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-top:16px;">
+          <div class="panel-header">
+            <h3 class="panel-title">核心總經主題脈動</h3>
+            <span class="panel-sub">跨語系追蹤 AI 資本支出、Fed/ECB/BOJ 利率、關稅貿易摩擦、通膨與地緣風險</span>
+          </div>
+          <div id="themeGrid" class="theme-grid"></div>
+        </div>
+      </section>
+
+      <!-- 分頁 2：產業利多 × 利空推薦排行（含合約／官方公告／突發事件消息面歸因） -->
+      <section id="tab-sectors" class="tab-panel">
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h2 class="panel-title text-bull">▲ 產業利多／抗跌推薦排行（含合約、官方公告與消息面要素）</h2>
+              <span class="panel-sub">綜合全球多語新聞催化 (30%) + 總經順風 (25%) + 成分股動能 (25%) + 基本面體質 (20%)。點擊任一產業可直接檢視成分股。</span>
+            </div>
+          </div>
+          <div id="bullishSectorGrid" class="sector-grid"></div>
+        </div>
+
+        <div class="panel" style="margin-top:16px;">
+          <div class="panel-header">
+            <div>
+              <h2 class="panel-title text-bear">▼ 產業利空／警戒避開排行（為何利空與突發事件歸因）</h2>
+              <span class="panel-sub">自動追蹤監管調查、出口管制、官方駁回、高層動盪、財報失利與地緣衝擊等具體利空消息，由承壓最重排至最輕。</span>
+            </div>
+          </div>
+          <div id="bearishSectorGrid" class="sector-grid"></div>
+        </div>
+      </section>
+
+      <!-- 分頁 3：★ 自選股追蹤欄位 -->
+      <section id="tab-watchlist" class="tab-panel">
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h2 class="panel-title">★ 我的美台股自選股追蹤欄位</h2>
+              <span class="panel-sub">加入任意美股（如 NVDA、TSLA）或台股（如 2330、0050），自動追蹤報價、基本面、三大法人、AI 信用評等、回測與個人投資備忘（盤前 LINE 推播優先納入）</span>
+            </div>
+          </div>
+
+          <div id="wlAddForm" class="wl-add-form">
+            <input id="wlSymbolInput" class="input-field mono" type="text" placeholder="輸入美股或台股代號 (如 AAOI / 2330 / NVDA)" style="min-width:230px;" aria-label="新增自選股代號" />
+            <input id="wlNoteInput" class="input-field" type="text" placeholder="選填投資備忘（如：跌破月線分批承接、觀察財報）" style="flex:1; min-width:220px;" aria-label="投資備忘" />
+            <button id="wlAddBtn" type="button" class="btn btn-primary">+ 加入自選股</button>
+          </div>
+
+          <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:14px;">
+            <span class="panel-sub">快速加入熱門標的：</span>
+            <button type="button" class="chip wl-quick-btn" data-qsym="2330.TW">+ 台積電 2330</button>
+            <button type="button" class="chip wl-quick-btn" data-qsym="NVDA">+ 輝達 NVDA</button>
+            <button type="button" class="chip wl-quick-btn" data-qsym="LLY">+ 禮來 LLY</button>
+            <button type="button" class="chip wl-quick-btn" data-qsym="6446.TW">+ 藥華藥 6446</button>
+            <button type="button" class="chip wl-quick-btn" data-qsym="2308.TW">+ 台達電 2308</button>
+            <button type="button" class="chip wl-quick-btn" data-qsym="MSFT">+ 微軟 MSFT</button>
+          </div>
+
+          <div id="wlKpiStrip" class="detail-kpi-strip" style="margin-bottom:14px;"></div>
+          <div id="watchlistGrid" class="wl-grid"></div>
+        </div>
+      </section>
+
+      <!-- 分頁 4：個股診斷 × 籌碼 × 策略回測 -->
+      <section id="tab-stocks" class="tab-panel">
+        <div class="filter-bar">
+          <button class="chip active" data-market="ALL">全部市場</button>
+          <button class="chip" data-market="WATCHLIST">★ 僅看自選</button>
+          <button class="chip" data-market="US">美股 US</button>
+          <button class="chip" data-market="TW">台股 TW</button>
+          <select id="sectorFilter" class="input-field" aria-label="依產業篩選">
+            <option value="ALL">全部產業</option>
+          </select>
+          <select id="sortFilter" class="input-field" aria-label="排序方式">
+            <option value="total">依綜合評分排序</option>
+            <option value="fundamental">依基本面評分排序</option>
+            <option value="technical">依技術面評分排序</option>
+            <option value="backtest">依策略回測報酬排序</option>
+          </select>
+          <input
+            id="stockSearch"
+            class="input-field"
+            type="text"
+            placeholder="篩選名稱或代號..."
+            aria-label="篩選個股"
+          />
+        </div>
+
+        <div class="stocks-workspace">
+          <div id="stockListPanel" class="panel stock-list-panel"></div>
+
+          <div id="stockDetailPanel" class="panel">
+            <div class="detail-header">
+              <div>
+                <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                  <h2 id="detailName" class="detail-title">—</h2>
+                  <span id="detailSymbol" class="tag tag-muted mono">—</span>
+                  <span id="detailRating" class="tag tag-brand">—</span>
+                  <button id="detailStarBtn" type="button" class="star-btn">☆ 加入自選</button>
+                </div>
+                <div id="detailMeta" class="detail-meta">—</div>
+              </div>
+              <div class="detail-price-box">
+                <div id="detailPrice" class="detail-price mono">—</div>
+                <div id="detailChanges" class="panel-sub mono">—</div>
+              </div>
+            </div>
+
+            <p id="detailSummary" style="margin:12px 0 0; font-size:13.5px; color:var(--text-secondary);"></p>
+
+            <div class="detail-kpi-strip">
+              <div class="kpi-tile">
+                <div class="kpi-label">綜合評分</div>
+                <div id="kpiTotal" class="kpi-value mono">—</div>
+              </div>
+              <div class="kpi-tile">
+                <div class="kpi-label">基本面評級 / 分數</div>
+                <div id="kpiFund" class="kpi-value mono">—</div>
+              </div>
+              <div class="kpi-tile">
+                <div class="kpi-label">技術面趨勢 / 分數</div>
+                <div id="kpiTech" class="kpi-value mono">—</div>
+              </div>
+              <div class="kpi-tile">
+                <div class="kpi-label">支撐位 / 壓力位</div>
+                <div id="kpiSR" class="kpi-value mono">—</div>
+              </div>
+            </div>
+
+            <!-- K 線與技術指標圖 -->
+            <div class="chart-section">
+              <div class="chart-toolbar">
+                <div class="chart-legend">
+                  <strong>日 K 線與均線走勢</strong>
+                  <span><i class="legend-dot" style="background:var(--chart-ma5);"></i>MA5</span>
+                  <span><i class="legend-dot" style="background:var(--chart-ma20);"></i>MA20</span>
+                  <span><i class="legend-dot" style="background:var(--chart-ma60);"></i>MA60</span>
+                </div>
+                <div style="display:flex; gap:6px;">
+                  <button type="button" class="chip active subchart-btn" data-sub="volume">成交量</button>
+                  <button type="button" class="chip subchart-btn" data-sub="rsi">RSI(14)</button>
+                  <button type="button" class="chip subchart-btn" data-sub="macd">MACD 柱</button>
+                </div>
+              </div>
+              <div id="chartHoverReadout" class="chart-hover-readout mono">移動滑鼠至圖表上檢視每日 OHLC、均線與技術指標數值</div>
+              <div class="chart-canvas-wrap">
+                <canvas id="stockChartCanvas"></canvas>
+              </div>
+            </div>
+
+            <!-- 台股個股三大法人買賣超區塊 -->
+            <div id="stockInstBox" class="bt-section" style="display:none;">
+              <div class="panel-header" style="margin-bottom:6px;">
+                <h4 class="pc-title" style="margin:0;">台股三大法人買賣超籌碼（TWSE T86）</h4>
+                <span id="stockInstBadge" class="tag tag-brand">—</span>
+              </div>
+              <div id="stockInstGrid" class="inst-strip"></div>
+              <div class="pros-cons-grid" style="margin-top:10px;">
+                <ul id="instPros" class="bullet-list bullet-bull"></ul>
+                <ul id="instCons" class="bullet-list bullet-bear"></ul>
+              </div>
+            </div>
+
+            <!-- 2年期量化策略回測區塊 -->
+            <div id="backtestBox" class="bt-section" style="display:none;">
+              <div class="panel-header" style="margin-bottom:4px;">
+                <div>
+                  <h4 class="pc-title" style="margin:0;">量化策略歷史回測驗證（點擊策略列切換淨值曲線）</h4>
+                  <span id="btSub" class="panel-sub mono">—</span>
+                </div>
+                <span id="btBestBadge" class="tag tag-bull">—</span>
+              </div>
+              <div style="overflow-x:auto;">
+                <table class="bt-table">
+                  <thead>
+                    <tr>
+                      <th>策略名稱</th>
+                      <th>總報酬</th>
+                      <th>超額 Alpha</th>
+                      <th>年化</th>
+                      <th>最大回撤</th>
+                      <th>夏普</th>
+                      <th>勝率 / 次數</th>
+                      <th>當前訊號</th>
+                    </tr>
+                  </thead>
+                  <tbody id="btTableBody"></tbody>
+                </table>
+              </div>
+              <div class="chart-legend" style="margin-top:10px; font-size:12px;">
+                <span><i class="legend-dot" style="background:var(--brand);"></i>選定策略淨值（基期=100）</span>
+                <span><i class="legend-dot" style="background:var(--chart-ma60);"></i>買進持有基準（Buy &amp; Hold）</span>
+              </div>
+              <div class="bt-canvas-wrap">
+                <canvas id="equityChartCanvas"></canvas>
+              </div>
+            </div>
+
+            <div id="fundamentalMetrics" class="metrics-grid"></div>
+
+            <div class="pros-cons-grid">
+              <div class="pc-box">
+                <h4 class="pc-title"><span>基本面優勢</span><span class="tag tag-bull">STRENGTHS</span></h4>
+                <ul id="fundPros" class="bullet-list bullet-bull"></ul>
+              </div>
+              <div class="pc-box">
+                <h4 class="pc-title"><span>基本面劣勢與風險</span><span class="tag tag-bear">WEAKNESSES</span></h4>
+                <ul id="fundCons" class="bullet-list bullet-bear"></ul>
+              </div>
+              <div class="pc-box">
+                <h4 class="pc-title"><span>技術面優勢</span><span class="tag tag-bull">SIGNALS +</span></h4>
+                <ul id="techPros" class="bullet-list bullet-bull"></ul>
+              </div>
+              <div class="pc-box">
+                <h4 class="pc-title"><span>技術面劣勢與警戒</span><span class="tag tag-bear">SIGNALS -</span></h4>
+                <ul id="techCons" class="bullet-list bullet-bear"></ul>
+              </div>
+            </div>
+
+            <!-- 個股 AI 信用風險評等卡 -->
+            <div id="stockCreditBox" class="bt-section" style="display:none;">
+              <div class="panel-header" style="margin-bottom:8px;">
+                <div>
+                  <h4 class="pc-title" style="margin:0;">AI 信用風險體檢（五維違約壓力模型）</h4>
+                  <span id="stockCreditDiag" class="panel-sub">—</span>
+                </div>
+                <div style="display:flex; gap:6px; align-items:center;">
+                  <span id="stockCreditRating" class="rating-badge rating-ig mono">—</span>
+                  <span id="stockCreditLevel" class="tag tag-neutral">—</span>
+                </div>
+              </div>
+              <div id="stockCreditDims" style="display:flex; flex-direction:column; gap:6px;"></div>
+            </div>
+
+            <div id="relatedNewsWrap" style="margin-top:16px;">
+              <div class="stance-kicker" style="margin-bottom:8px;">關聯全球財經情報</div>
+              <div id="relatedNewsList" class="news-list"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 分頁 4：AI 信用風險雷達 -->
+      <section id="tab-credit" class="tab-panel">
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h2 class="panel-title">AI 信用風險雷達（全球債市利差 × 企業五維違約壓力）</h2>
+              <span class="panel-sub">整合高收益債利差 (HYG/IEF)、槓桿貸款 (BKLN)、區域銀行 (KRE)、財報槓桿／現金流與全球信用事件即時監測</span>
+            </div>
+            <div style="display:flex; gap:8px; align-items:center;">
+              <span id="creditSpreadBadge" class="tag tag-muted">—</span>
+              <span id="creditLevelBadge" class="tag tag-neutral">—</span>
+            </div>
+          </div>
+
+          <div class="credit-hero">
+            <div class="radar-panel-box">
+              <div>
+                <div class="stance-kicker">5-Axis Credit Risk Radar（外圈 = 高風險）</div>
+                <div class="chart-legend" style="margin-top:6px; font-size:12px;">
+                  <span><i class="legend-dot" style="background:var(--brand);"></i>市場系統性信用基準</span>
+                  <span><i class="legend-dot" style="background:var(--bear);"></i><strong id="radarFocusName">選定個股對比</strong></span>
+                </div>
+              </div>
+              <div class="radar-canvas-wrap">
+                <canvas id="creditRadarCanvas"></canvas>
+              </div>
+              <div class="panel-sub" style="text-align:center;">點擊下方監控表任一公司即可即時疊加比對五維信用風險</div>
+            </div>
+
+            <div class="macro-narrative">
+              <div style="display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;">
+                <span id="creditSysScore" class="stance-score mono" style="font-size:36px;">—</span>
+                <span class="panel-sub">/ 100 系統性信用風險總指數（數值越高代表信用壓力越重）</span>
+              </div>
+              <p id="creditAiSummary" class="summary-lead">—</p>
+              <div class="two-col" style="margin-top:0;">
+                <div class="pc-box">
+                  <h4 class="pc-title"><span>核心信用警示</span><span class="tag tag-bear">ALERTS</span></h4>
+                  <ul id="creditWarnings" class="bullet-list bullet-bear"></ul>
+                </div>
+                <div class="pc-box">
+                  <h4 class="pc-title"><span>信用緩衝與防禦紀律</span><span class="tag tag-bull">BUFFERS</span></h4>
+                  <ul id="creditMitigations" class="bullet-list bullet-bull"></ul>
+                </div>
+              </div>
+              <div>
+                <div class="stance-kicker">追蹤標的 AI 模擬信評分布（AAA 最安全 → CCC 高危）</div>
+                <div id="creditRatingDist" class="rating-dist-strip"></div>
+              </div>
+            </div>
+          </div>
+
+          <div id="creditProxyGrid" class="benchmark-grid"></div>
+        </div>
+
+        <div class="credit-workspace">
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h3 class="panel-title">美台股 AI 信用風險監控排行</h3>
+                <span class="panel-sub">點擊任一列即可更新上方五維雷達圖與右側 AI 信用診斷書</span>
+              </div>
+              <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                <button type="button" class="chip active credit-mkt-chip" data-cmkt="ALL">全部</button>
+                <button type="button" class="chip credit-mkt-chip" data-cmkt="US">美股</button>
+                <button type="button" class="chip credit-mkt-chip" data-cmkt="TW">台股</button>
+                <select id="creditSortSel" class="input-field" style="height:30px; font-size:12px;" aria-label="信用風險排序">
+                  <option value="risk_desc">高風險優先</option>
+                  <option value="risk_asc">最安全優先</option>
+                </select>
+              </div>
+            </div>
+            <div style="overflow-x:auto;">
+              <table class="bt-table">
+                <thead>
+                  <tr>
+                    <th>標的</th>
+                    <th>AI信評</th>
+                    <th>風險分</th>
+                    <th>D/E</th>
+                    <th>流動比</th>
+                    <th>60D波動</th>
+                    <th>燈號</th>
+                  </tr>
+                </thead>
+                <tbody id="creditWatchlistBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div style="display:flex; flex-direction:column; gap:16px;">
+            <div id="creditCompanyBox" class="panel">
+              <div class="panel-header" style="margin-bottom:8px;">
+                <div>
+                  <h3 id="ccTitle" class="panel-title">選定企業 AI 信用診斷書</h3>
+                  <span id="ccSub" class="panel-sub">—</span>
+                </div>
+                <span id="ccRating" class="rating-badge rating-ig mono">—</span>
+              </div>
+              <p id="ccDiagnosis" class="panel-sub" style="margin:0 0 10px; color:var(--text-primary); line-height:1.6;">—</p>
+              <div id="ccMetrics" class="metrics-grid" style="margin-top:0; margin-bottom:10px;"></div>
+              <div style="display:flex; flex-direction:column; gap:10px;">
+                <div>
+                  <div class="stance-kicker text-bear" style="margin-bottom:4px;">信用風險紅旗（Red Flags）</div>
+                  <ul id="ccRedFlags" class="bullet-list bullet-bear"></ul>
+                </div>
+                <div>
+                  <div class="stance-kicker text-bull" style="margin-bottom:4px;">信用護城河（Buffers）</div>
+                  <ul id="ccBuffers" class="bullet-list bullet-bull"></ul>
+                </div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-header">
+                <div>
+                  <h3 class="panel-title">全球 AI 信用事件預警快訊</h3>
+                  <span class="panel-sub">點擊任一快訊可閱讀完整報導並前往來源網站人工驗證</span>
+                </div>
+              </div>
+              <div id="creditNewsList" class="news-list"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 分頁 5：全球多語系財經情資庫 -->
+      <section id="tab-news" class="tab-panel">
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h2 class="panel-title">全球多語系即時財經情報流</h2>
+              <span class="panel-sub">跨洲涵蓋北美、歐洲（英/德/法）、日本、韓國、東南亞／印度、中東與台灣</span>
+            </div>
+            <div class="filter-bar" style="margin-bottom:0;">
+              <button class="chip active news-chip" data-nfilter="ALL">全部全球</button>
+              <button class="chip news-chip" data-nfilter="北美">北美</button>
+              <button class="chip news-chip" data-nfilter="歐洲">歐洲</button>
+              <button class="chip news-chip" data-nfilter="日本">日本</button>
+              <button class="chip news-chip" data-nfilter="韓國">韓國</button>
+              <button class="chip news-chip" data-nfilter="亞太新興">星/印</button>
+              <button class="chip news-chip" data-nfilter="台灣">台灣</button>
+              <button class="chip news-chip" data-nfilter="BULL">利多</button>
+              <button class="chip news-chip" data-nfilter="BEAR">利空</button>
+            </div>
+          </div>
+          <div id="newsFeedList" class="news-list"></div>
+        </div>
+      </section>
+
+      <footer id="disclaimerText" class="disclaimer"></footer>
+    </div>
+  </main>
+
+  <!-- 消息面清單與完整報導閱讀器 Modal（支援人工驗證來源網站） -->
+  <div id="newsModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="modalTitle" style="display:none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <div style="display:flex; align-items:center; gap:10px; min-width:0;">
+          <button id="modalBackBtn" type="button" class="btn" style="display:none; height:30px; padding:0 10px;">← 返回產業清單</button>
+          <div style="min-width:0;">
+            <h3 id="modalTitle" class="panel-title" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">消息面詳情</h3>
+            <div id="modalSub" class="panel-sub">—</div>
+          </div>
+        </div>
+        <button id="modalCloseBtn" type="button" class="btn" style="height:30px; padding:0 10px;" aria-label="關閉視窗">關閉 ✕</button>
+      </div>
+      <div id="modalBody" class="modal-body"></div>
+      <div id="modalFooter" class="modal-footer" style="display:none;"></div>
+    </div>
+  </div>
+
+  <div id="statusToast" class="status-toast" role="status" aria-live="polite"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

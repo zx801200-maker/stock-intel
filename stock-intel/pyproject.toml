@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stock-intel"
+version = "1.0.0"
+description = "跨市場（美股/台股）國際新聞財經情報、多空推演、利多產業篩選與基本面/技術面優劣勢分析系統"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.92.0",
+    "uvicorn>=0.17.6",
+    "numpy>=1.24.0",
+    "pydantic>=1.10.0",
+]
+
+[project.optional-dependencies]
+llm = [
+    "openai>=1.0.0",
+    "google-genai>=1.0.0",
+]
+
+[project.scripts]
+stock-intel = "run:main"
