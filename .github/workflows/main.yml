@@ -1,0 +1,52 @@
+name: Stock Intel 台美股盤前自動分析與推播
+on:
+  schedule:
+    # 台股盤前：週一～週五 08:15 台北時間 = 00:15 UTC
+    - cron: "15 0 * * 1-5"
+    # 美股盤前：週一～週五 20:45 台北時間 = 12:45 UTC
+    - cron: "45 12 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      session:
+        description: "執行場次"
+        required: true
+        default: "tw_premarket"
+        type: choice
+        options:
+          - tw_premarket
+          - us_premarket
+          - daily
+jobs:
+  premarket-intel:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run pre-market analysis and push to LINE
+        env:
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_FORMAT: flex
+          WATCHLIST_SYMBOLS: ${{ vars.WATCHLIST_SYMBOLS }}
+        run: |
+          if [ -z "$(find . -maxdepth 3 -name run.py)" ] && [ -f "stock-intel-github.zip" ]; then
+            unzip -qo stock-intel-github.zip
+          fi
+          RUN_FILE="$(find . -maxdepth 3 -name run.py | head -n 1)"
+          if [ -z "$RUN_FILE" ]; then
+            echo "找不到 run.py，請確認檔案已上傳"
+            exit 1
+          fi
+          cd "$(dirname "$RUN_FILE")"
+          pip install -r requirements.txt
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            SESSION="${{ inputs.session }}"
+          elif [ "${{ github.event.schedule }}" = "15 0 * * 1-5" ]; then
+            SESSION="tw_premarket"
+          else
+            SESSION="us_premarket"
+          fi
+          python3 run.py push --session "${SESSION}"
