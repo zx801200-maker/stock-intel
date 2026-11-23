@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import http.cookiejar
 import json
+import random
 import threading
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -13,6 +16,16 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from stock_intel.config import CREDIT_PROXIES, HTTP_USER_AGENT, MACRO_BENCHMARKS
 from stock_intel.models import BenchmarkQuote
+
+try:
+    from curl_cffi import requests as _cffi_requests  # type: ignore
+except Exception:
+    _cffi_requests = None
+
+try:
+    import yfinance as _yf  # type: ignore
+except Exception:
+    _yf = None
 
 
 def _safe_float(val: Any) -> Optional[float]:
@@ -35,56 +48,177 @@ def _safe_int(val: Any) -> int:
 
 
 class YahooSession:
-    """線程安全的 Yahoo Finance Cookie + Crumb 會話管理器（零外部依賴）。"""
+    """線程安全的 Yahoo Finance 會話管理器：支援 curl_cffi Chrome TLS、query1/query2 輪換、退避重試與 yfinance 回退。"""
+
+    _HOSTS = ("query2.finance.yahoo.com", "query1.finance.yahoo.com")
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._pace_lock = threading.Lock()
+        self._last_req_ts = 0.0
         self._cj = http.cookiejar.CookieJar()
         self._opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self._cj))
-        self._opener.addheaders = [
-            ("User-Agent", HTTP_USER_AGENT),
-            ("Accept", "application/json, text/plain, */*"),
-        ]
+        self._headers = {
+            "User-Agent": HTTP_USER_AGENT,
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Origin": "https://finance.yahoo.com",
+            "Referer": "https://finance.yahoo.com/",
+        }
+        self._opener.addheaders = list(self._headers.items())
+        self._cffi_session = None
+        if _cffi_requests is not None:
+            try:
+                self._cffi_session = _cffi_requests.Session(impersonate="chrome")
+            except Exception:
+                self._cffi_session = None
         self._crumb: Optional[str] = None
         self._initialized = False
+        self._host_idx = 0
+
+    @property
+    def backend_name(self) -> str:
+        parts = ["curl_cffi" if self._cffi_session is not None else "urllib"]
+        if _yf is not None:
+            parts.append("yfinance-fallback")
+        return "+".join(parts)
+
+    def _pace(self, min_interval: float = 0.14) -> None:
+        with self._pace_lock:
+            now = time.monotonic()
+            wait = self._last_req_ts + min_interval - now
+            if wait > 0:
+                time.sleep(wait)
+            self._last_req_ts = time.monotonic()
+
+    def _next_host(self) -> str:
+        with self._pace_lock:
+            h = self._HOSTS[self._host_idx % len(self._HOSTS)]
+            self._host_idx += 1
+            return h
+
+    def _http_get_text(self, url: str, timeout: int = 12) -> Tuple[int, Optional[str]]:
+        self._pace()
+        if self._cffi_session is not None:
+            try:
+                with self._lock:
+                    resp = self._cffi_session.get(url, headers=self._headers, timeout=timeout)
+                return int(resp.status_code), resp.text
+            except Exception:
+                return 0, None
+        try:
+            with self._opener.open(url, timeout=timeout) as r:
+                return int(getattr(r, "status", 200)), r.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as err:
+            return int(err.code), None
+        except Exception:
+            return 0, None
 
     def ensure_crumb(self) -> Optional[str]:
+        if self._initialized:
+            return self._crumb
         with self._lock:
             if self._initialized:
                 return self._crumb
             self._initialized = True
-            try:
-                try:
-                    self._opener.open("https://fc.yahoo.com", timeout=6)
-                except Exception:
-                    pass
-                with self._opener.open("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=6) as r:
-                    crumb = r.read().decode("utf-8", errors="ignore").strip()
-                    if crumb and "<" not in crumb:
-                        self._crumb = crumb
-            except Exception:
-                self._crumb = None
-            return self._crumb
-
-    def fetch_json(self, url: str, timeout: int = 10) -> Optional[Dict[str, Any]]:
         try:
-            with self._opener.open(url, timeout=timeout) as r:
-                return json.loads(r.read().decode("utf-8", errors="replace"))
+            self._http_get_text("https://fc.yahoo.com", timeout=6)
+            for host in self._HOSTS:
+                status, text = self._http_get_text(f"https://{host}/v1/test/getcrumb", timeout=8)
+                crumb = (text or "").strip()
+                if status == 200 and crumb and "<" not in crumb and len(crumb) <= 40:
+                    self._crumb = crumb
+                    break
+        except Exception:
+            self._crumb = None
+        return self._crumb
+
+    def fetch_json(self, path_and_query: str, timeout: int = 12, retries: int = 3) -> Optional[Dict[str, Any]]:
+        """向 Yahoo Finance 請求 JSON，自動輪換 query2/query1 並對 HTTP 429/5xx 進行指數退避重試。"""
+        for attempt in range(retries):
+            if path_and_query.startswith("http://") or path_and_query.startswith("https://"):
+                url = path_and_query
+                if attempt > 0:
+                    url = (
+                        url.replace("query1.finance.yahoo.com", "query2.finance.yahoo.com")
+                        if "query1.finance.yahoo.com" in url
+                        else url.replace("query2.finance.yahoo.com", "query1.finance.yahoo.com")
+                    )
+            else:
+                host = self._next_host()
+                url = f"https://{host}{path_and_query}"
+
+            status, text = self._http_get_text(url, timeout=timeout)
+            if status == 200 and text:
+                try:
+                    return json.loads(text)
+                except Exception:
+                    return None
+            if status in (429, 401, 403, 500, 502, 503, 504, 0) and attempt < retries - 1:
+                delay = (0.9 * (2 ** attempt)) + random.uniform(0.15, 0.55)
+                time.sleep(delay)
+                continue
+            return None
+        return None
+
+    def _fetch_chart_via_yfinance(self, symbol: str, range_str: str = "2y", interval: str = "1d") -> Optional[Dict[str, Any]]:
+        if _yf is None:
+            return None
+        try:
+            ticker = _yf.Ticker(symbol)
+            hist = ticker.history(period=range_str, interval=interval, auto_adjust=False)
+            if hist is None or hist.empty:
+                return None
+            bars: List[Dict[str, Any]] = []
+            for ts, row in hist.iterrows():
+                c = _safe_float(row.get("Close"))
+                if c is None or c <= 0:
+                    continue
+                o = _safe_float(row.get("Open")) or c
+                h = _safe_float(row.get("High")) or max(o, c)
+                l = _safe_float(row.get("Low")) or min(o, c)
+                v = _safe_float(row.get("Volume")) or 0.0
+                dt = ts.strftime("%Y-%m-%d") if hasattr(ts, "strftime") else str(ts)[:10]
+                bars.append(
+                    {
+                        "date": dt,
+                        "open": round(o, 4),
+                        "high": round(h, 4),
+                        "low": round(l, 4),
+                        "close": round(c, 4),
+                        "volume": int(v),
+                    }
+                )
+            if not bars:
+                return None
+            fast = {}
+            try:
+                fast = dict(getattr(ticker, "fast_info", {}) or {})
+            except Exception:
+                fast = {}
+            highs = [b["high"] for b in bars[-252:]]
+            lows = [b["low"] for b in bars[-252:]]
+            return {
+                "symbol": symbol,
+                "short_name": symbol,
+                "currency": str(fast.get("currency") or ("TWD" if symbol.upper().endswith((".TW", ".TWO")) else "USD")),
+                "regular_price": _safe_float(fast.get("lastPrice")) or bars[-1]["close"],
+                "fifty_two_week_high": _safe_float(fast.get("yearHigh")) or (max(highs) if highs else None),
+                "fifty_two_week_low": _safe_float(fast.get("yearLow")) or (min(lows) if lows else None),
+                "bars": bars,
+            }
         except Exception:
             return None
 
     def fetch_chart(self, symbol: str, range_str: str = "2y", interval: str = "1d") -> Optional[Dict[str, Any]]:
         encoded = urllib.parse.quote(symbol)
-        url = (
-            f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded}"
-            f"?range={range_str}&interval={interval}&includePrePost=false"
-        )
-        data = self.fetch_json(url, timeout=10)
+        path = f"/v8/finance/chart/{encoded}?range={range_str}&interval={interval}&includePrePost=false"
+        data = self.fetch_json(path, timeout=12, retries=3)
         if not data:
-            return None
+            return self._fetch_chart_via_yfinance(symbol, range_str=range_str, interval=interval)
         results = (data.get("chart") or {}).get("result") or []
         if not results:
-            return None
+            return self._fetch_chart_via_yfinance(symbol, range_str=range_str, interval=interval)
         res = results[0]
         meta = res.get("meta") or {}
         timestamps = res.get("timestamp") or []
@@ -116,7 +250,7 @@ class YahooSession:
                 }
             )
         if not bars:
-            return None
+            return self._fetch_chart_via_yfinance(symbol, range_str=range_str, interval=interval)
         return {
             "symbol": meta.get("symbol", symbol),
             "short_name": meta.get("shortName") or meta.get("longName") or symbol,
@@ -127,22 +261,67 @@ class YahooSession:
             "bars": bars,
         }
 
+    def _fetch_fundamentals_via_yfinance(self, symbol: str) -> Optional[Dict[str, Any]]:
+        if _yf is None:
+            return None
+        try:
+            info = _yf.Ticker(symbol).info or {}
+            if not info:
+                return None
+            div_yield = _safe_float(info.get("dividendYield"))
+            if div_yield is not None and div_yield < 1.0:
+                div_yield = div_yield * 100.0
+
+            def _pct(v: Any) -> Optional[float]:
+                f = _safe_float(v)
+                return round(f * 100.0, 2) if f is not None else None
+
+            return {
+                "name": info.get("shortName") or info.get("longName") or symbol,
+                "currency": info.get("currency") or ("TWD" if symbol.upper().endswith((".TW", ".TWO")) else "USD"),
+                "sector_raw": info.get("sector"),
+                "industry_raw": info.get("industry"),
+                "market_cap": _safe_float(info.get("marketCap")),
+                "pe_ratio": _safe_float(info.get("trailingPE")),
+                "forward_pe": _safe_float(info.get("forwardPE")),
+                "pb_ratio": _safe_float(info.get("priceToBook")),
+                "dividend_yield_pct": round(div_yield, 2) if div_yield is not None else None,
+                "roe_pct": _pct(info.get("returnOnEquity")),
+                "gross_margin_pct": _pct(info.get("grossMargins")),
+                "operating_margin_pct": _pct(info.get("operatingMargins")),
+                "profit_margin_pct": _pct(info.get("profitMargins")),
+                "revenue_growth_pct": _pct(info.get("revenueGrowth")),
+                "earnings_growth_pct": _pct(info.get("earningsGrowth")),
+                "debt_to_equity": _safe_float(info.get("debtToEquity")),
+                "current_ratio": _safe_float(info.get("currentRatio")),
+                "quick_ratio": _safe_float(info.get("quickRatio")),
+                "total_cash": _safe_float(info.get("totalCash")),
+                "total_debt": _safe_float(info.get("totalDebt")),
+                "free_cash_flow": _safe_float(info.get("freeCashflow")),
+                "operating_cash_flow": _safe_float(info.get("operatingCashflow")),
+                "ebitda": _safe_float(info.get("ebitda")),
+                "total_revenue": _safe_float(info.get("totalRevenue")),
+                "beta": _safe_float(info.get("beta")),
+                "target_mean_price": _safe_float(info.get("targetMeanPrice")),
+                "recommendation_key": info.get("recommendationKey"),
+                "data_source": "yfinance",
+            }
+        except Exception:
+            return None
+
     def fetch_fundamentals(self, symbol: str) -> Optional[Dict[str, Any]]:
         crumb = self.ensure_crumb()
         if not crumb:
-            return None
+            return self._fetch_fundamentals_via_yfinance(symbol)
         encoded = urllib.parse.quote(symbol)
         modules = "financialData,defaultKeyStatistics,summaryDetail,assetProfile,price"
-        url = (
-            f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{encoded}"
-            f"?modules={modules}&crumb={urllib.parse.quote(crumb)}"
-        )
-        data = self.fetch_json(url, timeout=10)
+        path = f"/v10/finance/quoteSummary/{encoded}?modules={modules}&crumb={urllib.parse.quote(crumb)}"
+        data = self.fetch_json(path, timeout=12, retries=2)
         if not data:
-            return None
+            return self._fetch_fundamentals_via_yfinance(symbol)
         results = (data.get("quoteSummary") or {}).get("result") or []
         if not results:
-            return None
+            return self._fetch_fundamentals_via_yfinance(symbol)
         res = results[0]
         fd = res.get("financialData") or {}
         sd = res.get("summaryDetail") or {}
@@ -426,7 +605,7 @@ class MarketCollector:
                 signal=signal,
             )
 
-        with ThreadPoolExecutor(max_workers=8) as pool:
+        with ThreadPoolExecutor(max_workers=4) as pool:
             futs = [pool.submit(_fetch_one, b) for b in MACRO_BENCHMARKS]
             for b, fut in zip(MACRO_BENCHMARKS, futs):
                 try:
@@ -435,6 +614,7 @@ class MarketCollector:
                         quotes.append(q)
                 except Exception:
                     continue
+        print(f"[MarketCollector] backend={self.yahoo.backend_name} | benchmarks={len(quotes)}/{len(MACRO_BENCHMARKS)}")
         return quotes
 
     def collect_credit_proxies(self) -> List[Dict[str, Any]]:
@@ -460,7 +640,7 @@ class MarketCollector:
                 "change_pct_1m": round((last - prev_1m) / prev_1m * 100.0, 2) if prev_1m else 0.0,
             }
 
-        with ThreadPoolExecutor(max_workers=5) as pool:
+        with ThreadPoolExecutor(max_workers=3) as pool:
             futs = [pool.submit(_fetch_proxy, b) for b in CREDIT_PROXIES]
             for fut in futs:
                 try:
@@ -469,6 +649,7 @@ class MarketCollector:
                         proxies.append(item)
                 except Exception:
                     continue
+        print(f"[MarketCollector] credit_proxies={len(proxies)}/{len(CREDIT_PROXIES)}")
         return proxies
 
     def collect_stock_bundle(self, symbol: str, range_str: str = "2y") -> Optional[Dict[str, Any]]:
@@ -511,15 +692,16 @@ class MarketCollector:
             "institutional_raw": inst_raw,
         }
 
-    def collect_stocks_batch(self, symbols: List[str], max_workers: int = 8) -> Dict[str, Dict[str, Any]]:
-        """併發批次抓取多檔股票資料，預先暖機 Yahoo crumb、TWSE OpenAPI 與三大法人資料。"""
+    def collect_stocks_batch(self, symbols: List[str], max_workers: int = 4) -> Dict[str, Dict[str, Any]]:
+        """併發批次抓取多檔股票資料，預先暖機 Yahoo crumb、TWSE OpenAPI 與三大法人資料，並自動節流防 429。"""
         self.yahoo.ensure_crumb()
         if any(s.upper().endswith(".TW") or s.upper().endswith(".TWO") for s in symbols):
             self.twse.load()
             self.twse.load_institutional()
 
+        safe_workers = max(1, min(max_workers, 4))
         results: Dict[str, Dict[str, Any]] = {}
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        with ThreadPoolExecutor(max_workers=safe_workers) as pool:
             futs = {pool.submit(self.collect_stock_bundle, sym): sym for sym in symbols}
             for fut in as_completed(futs):
                 orig = futs[fut]
@@ -529,4 +711,18 @@ class MarketCollector:
                         results[orig.upper()] = bundle
                 except Exception:
                     continue
+
+        # 對少數漏抓標的進行單線程補抓一次（避免雲端 IP 瞬間限流造成空資料）
+        missed = [s for s in symbols if s.upper() not in results]
+        if missed:
+            time.sleep(1.5)
+            for sym in missed:
+                try:
+                    bundle = self.collect_stock_bundle(sym)
+                    if bundle:
+                        results[sym.upper()] = bundle
+                except Exception:
+                    continue
+
+        print(f"[MarketCollector] stocks={len(results)}/{len(symbols)} (missed={len(symbols) - len(results)})")
         return results
