@@ -55,6 +55,272 @@ def _parse_pub_date(raw: str | None) -> str:
         return datetime.now(timezone.utc).isoformat()
 
 
+from urllib.parse import urlparse
+
+# =============================================================================
+# 具公信力之國際與台灣權威財經媒體白名單（嚴格阻擋內容農場、散戶論壇、部落格與雜訊）
+# =============================================================================
+CREDIBLE_MEDIA_DOMAINS = (
+    # 北美／全球一線通訊社與財經媒體
+    "reuters.com",
+    "bloomberg.com",
+    "wsj.com",
+    "ft.com",
+    "cnbc.com",
+    "barrons.com",
+    "marketwatch.com",
+    "apnews.com",
+    "afp.com",
+    "nytimes.com",
+    "washingtonpost.com",
+    "economist.com",
+    "fortune.com",
+    "investors.com",
+    "morningstar.com",
+    "spglobal.com",
+    "moodys.com",
+    "fitchratings.com",
+    "abcnews.com",
+    "cbsnews.com",
+    "nbcnews.com",
+    "sec.gov",
+    "federalreserve.gov",
+    "fda.gov",
+    # 歐洲（英／德／法／歐元區）
+    "bbc.com",
+    "bbc.co.uk",
+    "theguardian.com",
+    "telegraph.co.uk",
+    "thetimes.com",
+    "thetimes.co.uk",
+    "news.sky.com",
+    "handelsblatt.com",
+    "wiwo.de",
+    "faz.net",
+    "spiegel.de",
+    "sueddeutsche.de",
+    "dw.com",
+    "tagesschau.de",
+    "zeit.de",
+    "welt.de",
+    "lesechos.fr",
+    "lemonde.fr",
+    "lefigaro.fr",
+    "latribune.fr",
+    "france24.com",
+    "bfmtv.com",
+    # 日本
+    "nikkei.com",
+    "nhk.or.jp",
+    "asahi.com",
+    "yomiuri.co.jp",
+    "mainichi.jp",
+    "sankei.com",
+    "jiji.com",
+    "kyodonews.net",
+    "47news.jp",
+    "toyokeizai.net",
+    "diamond.jp",
+    "bloomberg.co.jp",
+    # 韓國
+    "yna.co.kr",
+    "yonhapnewstv.co.kr",
+    "einfomax.co.kr",
+    "hankyung.com",
+    "mk.co.kr",
+    "chosun.com",
+    "joongang.co.kr",
+    "donga.com",
+    "sedaily.com",
+    "kbs.co.kr",
+    "sbs.co.kr",
+    "imbc.com",
+    "jtbc.co.kr",
+    "koreaherald.com",
+    "koreatimes.co.kr",
+    # 亞太新興（新加坡／印度）與中東全球
+    "straitstimes.com",
+    "businesstimes.com.sg",
+    "channelnewsasia.com",
+    "business-standard.com",
+    "economictimes.indiatimes.com",
+    "livemint.com",
+    "thehindu.com",
+    "thehindubusinessline.com",
+    "ndtv.com",
+    "ndtvprofit.com",
+    "timesofindia.indiatimes.com",
+    "aljazeera.com",
+    "arabnews.com",
+    "thenationalnews.com",
+    # 台灣權威財經媒體與官方機構
+    "twse.com.tw",
+    "cna.com.tw",
+    "money.udn.com",
+    "udn.com",
+    "ctee.com.tw",
+    "cnyes.com",
+    "ec.ltn.com.tw",
+    "businesstoday.com.tw",
+    "businessweekly.com.tw",
+    "cw.com.tw",
+    "wealth.com.tw",
+    "digitimes.com.tw",
+    "digitimes.com",
+    "technews.tw",
+    "bnext.com.tw",
+    "moneydj.com",
+    "pts.org.tw",
+)
+
+CREDIBLE_MEDIA_NAMES = (
+    "reuters",
+    "bloomberg",
+    "wsj",
+    "wall street journal",
+    "financial times",
+    "cnbc",
+    "barron's",
+    "marketwatch",
+    "associated press",
+    "ap news",
+    "afp",
+    "new york times",
+    "washington post",
+    "the economist",
+    "fortune",
+    "investor's business daily",
+    "morningstar",
+    "s&p global",
+    "moody's",
+    "fitch",
+    "bbc",
+    "the guardian",
+    "the telegraph",
+    "handelsblatt",
+    "wirtschaftswoche",
+    "spiegel",
+    "frankfurter allgemeine",
+    "les echos",
+    "le monde",
+    "le figaro",
+    "france 24",
+    "日本経済新聞",
+    "nikkei",
+    "nhk",
+    "朝日新聞",
+    "読売新聞",
+    "毎日新聞",
+    "時事通信",
+    "共同通信",
+    "東洋経済",
+    "연합뉴스",
+    "연합인포맥스",
+    "한국경제",
+    "매일경제",
+    "조선일보",
+    "chosunbiz",
+    "중앙일보",
+    "동아일보",
+    "kbs",
+    "sbs",
+    "mbc",
+    "jtbc",
+    "straits times",
+    "business times",
+    "channel newsasia",
+    "cna",
+    "business standard",
+    "economic times",
+    "livemint",
+    "al jazeera",
+    "中央社",
+    "經濟日報",
+    "工商時報",
+    "鉅亨網",
+    "自由財經",
+    "聯合報",
+    "今周刊",
+    "商業周刊",
+    "天下雜誌",
+    "財訊",
+    "digitimes",
+    "科技新報",
+    "數位時代",
+    "moneydj",
+    "公視",
+    "twse",
+    "證交所",
+)
+
+# 即使是知名大站的子站，也排除娛樂／生活／汽車／軍武／部落格專欄頻道
+_DISALLOWED_SUBDOMAINS = (
+    "udn.com/news/story/7270",
+    "tech.udn.com",
+    "style.udn.com",
+    "stars.udn.com",
+    "health.udn.com",
+    "zai.diamond.jp",
+    "auto.ltn.com.tw",
+    "def.ltn.com.tw",
+    "ent.ltn.com.tw",
+    "sports.ltn.com.tw",
+    "istyle.ltn.com.tw",
+    "3c.ltn.com.tw",
+    "health.ltn.com.tw",
+)
+
+_DISALLOWED_SOURCE_KEYWORDS = (
+    "科技玩家",
+    "爆料",
+    "同學會",
+    "網誌",
+    "論壇",
+    "娛樂",
+    "八卦",
+    "鉅亨號",
+    "汽車頻道",
+    "軍武頻道",
+    "自由軍武",
+    "ザイfx",
+)
+
+
+def _domain_matches(url: str) -> bool:
+    if not url:
+        return False
+    low = url.lower()
+    if any(bad in low for bad in _DISALLOWED_SUBDOMAINS):
+        return False
+    try:
+        host = (urlparse(url).hostname or "").lower().strip(".")
+    except Exception:
+        return False
+    if not host:
+        return False
+    return any(host == dom or host.endswith("." + dom) for dom in CREDIBLE_MEDIA_DOMAINS)
+
+
+def is_credible_media(
+    source_name: str = "",
+    source_url: str = "",
+    link: str = "",
+    is_official: bool = False,
+    direct_feed: bool = False,
+) -> bool:
+    """嚴格檢查新聞來源是否屬於具公信力之權威財經媒體或官方公告。"""
+    if is_official or direct_feed:
+        return True
+    name_lo = (source_name or "").strip().lower()
+    if name_lo and any(bad in name_lo for bad in _DISALLOWED_SOURCE_KEYWORDS):
+        return False
+    if _domain_matches(source_url) or _domain_matches(link):
+        return True
+    if not name_lo:
+        return False
+    return any(tok in name_lo for tok in CREDIBLE_MEDIA_NAMES)
+
+
 def _fetch_single_feed(feed: FeedSource, max_items: int = 18, timeout: int = 9) -> List[NewsItem]:
     req = urllib.request.Request(
         feed["url"],
@@ -75,7 +341,10 @@ def _fetch_single_feed(feed: FeedSource, max_items: int = 18, timeout: int = 9) 
         nodes = root.findall(".//{http://www.w3.org/2005/Atom}entry")
         is_atom = True
 
-    for node in nodes[:max_items]:
+    is_aggregator = "news.google.com" in feed["url"].lower()
+    scan_limit = max_items * 3 if is_aggregator else max_items
+
+    for node in nodes[:scan_limit]:
         if is_atom:
             ns = "{http://www.w3.org/2005/Atom}"
             title = _clean_text(node.findtext(f"{ns}title"))
@@ -83,6 +352,8 @@ def _fetch_single_feed(feed: FeedSource, max_items: int = 18, timeout: int = 9) 
             link_el = node.find(f"{ns}link")
             link = (link_el.attrib.get("href", "") if link_el is not None else "").strip()
             pub_raw = node.findtext(f"{ns}updated") or node.findtext(f"{ns}published")
+            pub_source_name = ""
+            pub_source_url = ""
         else:
             title = _clean_text(node.findtext("title"))
             encoded_body = node.findtext("{http://purl.org/rss/1.0/modules/content/}encoded")
@@ -90,9 +361,26 @@ def _fetch_single_feed(feed: FeedSource, max_items: int = 18, timeout: int = 9) 
             raw_body = _clean_text(encoded_body or desc_body)
             link = (node.findtext("link") or "").strip()
             pub_raw = node.findtext("pubDate") or node.findtext("{http://purl.org/dc/elements/1.1/}date")
+            src_el = node.find("source")
+            pub_source_name = _clean_text(src_el.text) if src_el is not None else ""
+            pub_source_url = (src_el.attrib.get("url", "") if src_el is not None else "").strip()
 
         if not title or len(title) < 6:
             continue
+
+        # Google News 等聚合源一律嚴格審核原始媒體公信力，非白名單媒體直接捨棄
+        if is_aggregator:
+            if not is_credible_media(
+                source_name=pub_source_name,
+                source_url=pub_source_url,
+                link=link,
+                is_official=False,
+                direct_feed=False,
+            ):
+                continue
+            resolved_source = pub_source_name or feed["name"]
+        else:
+            resolved_source = feed["name"]
 
         full_content = raw_body[:2400] if raw_body else ""
         summary = raw_body
@@ -109,7 +397,7 @@ def _fetch_single_feed(feed: FeedSource, max_items: int = 18, timeout: int = 9) 
                 summary=summary,
                 full_content=full_content,
                 link=link,
-                source=feed["name"],
+                source=resolved_source,
                 region=feed["region"],
                 macro_region=feed.get("macro_region", "北美"),
                 lang=feed["lang"],
@@ -117,6 +405,8 @@ def _fetch_single_feed(feed: FeedSource, max_items: int = 18, timeout: int = 9) 
                 impact_weight=feed["weight"],
             )
         )
+        if len(items) >= max_items:
+            break
     return items
 
 
@@ -280,6 +570,10 @@ _BOILERPLATE_NEWS_PATTERNS = (
     "stock price, news",
     "stock price & news",
     "stock price today",
+    "stock price |",
+    "stock price (",
+    "in real time",
+    "check out ",
     "live stock price",
     "price and forecast",
     "stock price forecast",
@@ -313,7 +607,7 @@ _TW_WARRANT_RE = re.compile(
 
 # 容易同名誤判的企業排除規則（例如長榮海運 2603 vs 長榮航 2618）
 _COMPANY_CONFLICT_EXCLUSIONS: Dict[str, Tuple[str, ...]] = {
-    "2603": ("長榮航", "長榮航空", "長榮鋼"),
+    "2603": ("長榮航", "長榮航空", "長榮鋼", "航空", "搭機", "華航", "機票", "航班"),
     "2609": ("陽明山",),
     "2301": ("光寶科" + "技大",),
 }
@@ -331,12 +625,38 @@ _STOP_NAME_TOKENS = {
     "materials", "chemicals", "defense", "aerospace",
 }
 
+_US_TIER1_SITE_FILTER = (
+    "(site:reuters.com OR site:bloomberg.com OR site:cnbc.com OR site:wsj.com "
+    "OR site:ft.com OR site:marketwatch.com OR site:barrons.com OR site:apnews.com "
+    "OR site:nytimes.com OR site:investors.com OR site:fortune.com)"
+)
+_TW_TIER1_SITE_FILTER = (
+    "(site:money.udn.com OR site:ctee.com.tw OR site:cna.com.tw OR site:cnyes.com "
+    "OR site:ec.ltn.com.tw OR site:moneydj.com OR site:digitimes.com.tw OR site:technews.tw "
+    "OR site:businesstoday.com.tw OR site:cw.com.tw OR site:wealth.com.tw)"
+)
 
-def is_valid_stock_news(item: NewsItem, symbol: str, name: str = "", max_age_days: int = 21) -> bool:
-    """嚴格驗證新聞是否真正與該公司相關，並剔除報價頁／SEO預測頁／論壇灌水／權證短訊／同名不同公司與過期報導。"""
+
+def is_valid_stock_news(
+    item: NewsItem,
+    symbol: str,
+    name: str = "",
+    max_age_days: int = 21,
+    require_credible: bool = True,
+) -> bool:
+    """嚴格驗證新聞是否來自具公信力媒體且真正與該公司相關，並剔除報價頁／SEO預測頁／論壇／權證／誤配公司與過期報導。"""
     title = (item.title or "").strip()
     summary = (item.summary or "").strip()
     if not title:
+        return False
+
+    # 0. 必須來自具公信力之權威媒體或官方公告（嚴格阻擋內容農場、論壇、部落格）
+    if require_credible and not is_credible_media(
+        source_name=item.source,
+        link=item.link,
+        is_official=item.is_official,
+        direct_feed=False,
+    ):
         return False
 
     title_lo = title.lower()
@@ -414,11 +734,11 @@ def collect_stock_news(
     market: str = "US",
     max_items: int = 5,
 ) -> List[NewsItem]:
-    """針對單一自選股抓取近 7 日真實新聞（嚴格過濾報價頁／SEO預測頁／誤配公司；無新聞則回傳空陣列絕不硬塞）。"""
+    """針對單一自選股僅從具公信力權威媒體抓取近 7 日真實新聞（無權威報導則回傳空陣列絕不硬塞）。"""
     import urllib.parse
 
     code = symbol.strip().upper().split(".")[0]
-    clean_name = re.sub(r"\(.*?\)", " ", name or "").strip()
+    clean_name = re.sub(r"[()（）]", " ", name or "").strip()
     exclusions = _COMPANY_CONFLICT_EXCLUSIONS.get(code, ())
 
     if market == "TW":
@@ -426,12 +746,12 @@ def collect_stock_news(
         zh_tokens = [t for t in clean_name.split() if any("\u4e00" <= c <= "\u9fff" for c in t)]
         if zh_tokens:
             q_parts.append(f'"{zh_tokens[0]}"')
-        excl_q = " ".join(f'-"{ex}"' for ex in exclusions)
-        query = f"({' OR '.join(q_parts)}) (營收 OR 財報 OR 訂單 OR 合約 OR 法說 OR 股價 OR 公告) {excl_q} when:7d".strip()
+        excl_q = " ".join(f'-"{ex}"' for ex in exclusions[:4])
+        query = f"({' OR '.join(q_parts)}) {_TW_TIER1_SITE_FILTER} {excl_q} when:7d".strip()
         url = f"https://news.google.com/rss/search?q={urllib.parse.quote(query)}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
         feed: FeedSource = {
             "id": f"stock_{code}",
-            "name": f"{zh_tokens[0] if zh_tokens else code} 個股快訊",
+            "name": f"{zh_tokens[0] if zh_tokens else code} 權威個股快訊",
             "region": "台灣/個股",
             "macro_region": "台灣",
             "lang": "zh",
@@ -440,20 +760,22 @@ def collect_stock_news(
         }
     else:
         en_words = [
-            w for w in clean_name.split()
-            if w.isascii() and len(w) >= 3 and w.lower() not in _STOP_NAME_TOKENS
+            w for w in re.split(r"[\s,/・]+", clean_name)
+            if w.isascii() and w.isalpha() and len(w) >= 3 and w.lower() not in {"inc", "corp", "corporation", "ltd", "co", "the"}
         ]
         q_parts = [f'"{code}"']
-        if en_words:
+        if len(en_words) >= 2:
             q_parts.append(f'"{" ".join(en_words[:2])}"')
+        elif en_words and en_words[0].lower() not in _STOP_NAME_TOKENS:
+            q_parts.append(f'"{en_words[0]}"')
         query = (
-            f"({' OR '.join(q_parts)}) (earnings OR deal OR contract OR shares OR stock OR SEC OR analyst) "
-            f'-"stock quote" -"price forecast" -"should you buy" -"quote & history" when:7d'
+            f"({' OR '.join(q_parts)}) {_US_TIER1_SITE_FILTER} "
+            f'-"stock quote" -"price forecast" -"should you buy" -"in real time" when:7d'
         )
         url = f"https://news.google.com/rss/search?q={urllib.parse.quote(query)}&hl=en-US&gl=US&ceid=US:en"
         feed = {
             "id": f"stock_{code}",
-            "name": f"{code} 個股快訊",
+            "name": f"{code} 權威個股快訊",
             "region": "美國/個股",
             "macro_region": "北美",
             "lang": "en",
@@ -465,7 +787,7 @@ def collect_stock_news(
     seen = set()
     valid: List[NewsItem] = []
     for it in raw_items:
-        if not is_valid_stock_news(it, symbol, name=name, max_age_days=14):
+        if not is_valid_stock_news(it, symbol, name=name, max_age_days=14, require_credible=True):
             continue
         norm = re.sub(r"[\W_]+", "", it.title.lower())[:48]
         if norm and norm not in seen:
